@@ -373,6 +373,7 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
   const [error, setError] = useState<Error | null>(null);
   const [viewedPRs, setViewedPRs] = useState<ViewedPRs>({});
   const [lastRefresh, setLastRefresh] = useState<string>("");
+  const [hideViewedPRs, setHideViewedPRs] = useState(false);
 
   const fetchData = async (forceRefresh: boolean = false) => {
     try {
@@ -461,6 +462,20 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
     setViewedPRs(newViewedPRs);
   };
 
+  // Filter PRs based on viewed status
+  const filteredPullRequests = hideViewedPRs 
+    ? pullRequests.filter(pr => !viewedPRs[pr.pullRequestId.toString()])
+    : pullRequests;
+
+  const toggleHideViewed = () => {
+    setHideViewedPRs(!hideViewedPRs);
+    showToast({
+      style: Toast.Style.Success,
+      title: hideViewedPRs ? "Showing all PRs" : "Hiding viewed PRs",
+      message: hideViewedPRs ? "Viewed PRs are now visible" : "Only unread PRs will be shown",
+    });
+  };
+
   return (
     <List
       isLoading={isLoading}
@@ -484,17 +499,27 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
             shortcut={{ modifiers: ["cmd", "shift"], key: "r" }}
             icon={Icon.ArrowClockwise}
           />
+          <Action
+            title={hideViewedPRs ? "Show All PRs" : "Hide Viewed PRs"}
+            icon={hideViewedPRs ? Icon.Eye : Icon.EyeSlash}
+            onAction={toggleHideViewed}
+            shortcut={{ modifiers: ["cmd"], key: "h" }}
+          />
         </ActionPanel>
       }
     >
-      {pullRequests?.length === 0 ? (
+      {filteredPullRequests?.length === 0 ? (
         <List.EmptyView
           icon={Icon.CodeBlock}
-          title="No pull requests found"
-          description={`No pull requests found in the last ${selectedDayRange} days${lastRefresh ? ` (Last refresh: ${lastRefresh})` : ""}`}
+          title={hideViewedPRs ? "No unread pull requests" : "No pull requests found"}
+          description={
+            hideViewedPRs 
+              ? `All PRs in the last ${selectedDayRange} days have been viewed${lastRefresh ? ` (Last refresh: ${lastRefresh})` : ""}`
+              : `No pull requests found in the last ${selectedDayRange} days${lastRefresh ? ` (Last refresh: ${lastRefresh})` : ""}`
+          }
         />
       ) : (
-        pullRequests?.map((pr) => {
+        filteredPullRequests?.map((pr) => {
           const isViewed = viewedPRs[pr.pullRequestId.toString()] !== undefined;
           
           return (
@@ -505,7 +530,7 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
                 tintColor: isViewed ? "#28A745" : "#6C757D",
               }}
               title={`${getStatusEmoji(pr.status)} ${pr.title}`}
-              subtitle={`#${pr.pullRequestId}${lastRefresh ? ` • ${lastRefresh}` : ""}`}
+              subtitle={`#${pr.pullRequestId}${lastRefresh ? ` • ${lastRefresh}` : ""}${hideViewedPRs ? " • Unread only" : ""}`}
               accessories={[
                 { text: pr.createdBy.displayName },
                 { text: formatDate(pr.creationDate) },
@@ -535,6 +560,12 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
                     onAction={forceRefresh} 
                     shortcut={{ modifiers: ["cmd", "shift"], key: "r" }}
                     icon={Icon.ArrowClockwise}
+                  />
+                  <Action
+                    title={hideViewedPRs ? "Show All PRs" : "Hide Viewed PRs"}
+                    icon={hideViewedPRs ? Icon.Eye : Icon.EyeSlash}
+                    onAction={toggleHideViewed}
+                    shortcut={{ modifiers: ["cmd"], key: "h" }}
                   />
                 </ActionPanel>
               }
