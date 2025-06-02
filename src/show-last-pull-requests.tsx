@@ -144,6 +144,99 @@ function getVoteIcon(vote: number): string {
   return "⏳";
 }
 
+interface CachedPRData {
+  data: PullRequest[];
+  cachedAt: string;
+  organization: string;
+  project: string;
+  repository: string;
+  dayRange: number;
+}
+
+// Cache management
+const CACHE_KEY_PREFIX = "pullRequestsCache";
+const CACHE_EXPIRATION_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+function getCacheKey(organization: string, project: string, repository: string, dayRange: number): string {
+  return `${CACHE_KEY_PREFIX}_${organization}_${project}_${repository}_${dayRange}`;
+}
+
+async function getCachedPRs(organization: string, project: string, repository: string, dayRange: number): Promise<PullRequest[] | null> {
+  try {
+    const cacheKey = getCacheKey(organization, project, repository, dayRange);
+    const cached = await LocalStorage.getItem<string>(cacheKey);
+    
+    if (!cached) {
+      return null;
+    }
+    
+    const cachedData = JSON.parse(cached) as CachedPRData;
+    const now = Date.now();
+    const cachedTime = new Date(cachedData.cachedAt).getTime();
+    
+    // Check if cache is still valid (less than 2 hours old)
+    if (now - cachedTime < CACHE_EXPIRATION_MS) {
+      console.log(`Cache hit for ${organization}/${project}/${repository} (${dayRange} days)`);
+      return cachedData.data;
+    } else {
+      console.log(`Cache expired for ${organization}/${project}/${repository} (${dayRange} days)`);
+      // Remove expired cache
+      await LocalStorage.removeItem(cacheKey);
+      return null;
+    }
+  } catch (error) {
+    console.error("Error reading cache:", error);
+    return null;
+  }
+}
+
+async function setCachedPRs(organization: string, project: string, repository: string, dayRange: number, data: PullRequest[]): Promise<void> {
+  try {
+    const cacheKey = getCacheKey(organization, project, repository, dayRange);
+    const cacheData: CachedPRData = {
+      data,
+      cachedAt: new Date().toISOString(),
+      organization,
+      project,
+      repository,
+      dayRange,
+    };
+    
+    await LocalStorage.setItem(cacheKey, JSON.stringify(cacheData));
+    console.log(`Cached ${data.length} PRs for ${organization}/${project}/${repository} (${dayRange} days)`);
+  } catch (error) {
+    console.error("Error writing cache:", error);
+  }
+}
+
+async function clearOldCaches(): Promise<void> {
+  try {
+    // Get all LocalStorage items
+    const allItems = await LocalStorage.allItems();
+    const now = Date.now();
+    
+    for (const [key, value] of Object.entries(allItems)) {
+      if (key.startsWith(CACHE_KEY_PREFIX)) {
+        try {
+          const cachedData = JSON.parse(value as string) as CachedPRData;
+          const cachedTime = new Date(cachedData.cachedAt).getTime();
+          
+          // Remove if older than expiration time
+          if (now - cachedTime >= CACHE_EXPIRATION_MS) {
+            await LocalStorage.removeItem(key);
+            console.log(`Removed expired cache: ${key}`);
+          }
+        } catch {
+          // If we can't parse it, remove it
+          await LocalStorage.removeItem(key);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error clearing old caches:", error);
+  }
+}
+
 async function fetchPullRequests(organization: string, project: string, repository: string, days: number): Promise<PullRequest[]> {
   try {
     const sinceDate = new Date();
@@ -210,6 +303,24 @@ async function fetchPullRequests(organization: string, project: string, reposito
   }
 }
 
+// Enhanced fetchPullRequests with caching
+async function fetchPullRequestsWithCache(organization: string, project: string, repository: string, days: number): Promise<PullRequest[]> {
+  // Try to get from cache first
+  const cachedData = await getCachedPRs(organization, project, repository, days);
+  if (cachedData) {
+    return cachedData;
+  }
+  
+  // Cache miss - fetch from API
+  console.log(`Cache miss - fetching from API: ${organization}/${project}/${repository} (${days} days)`);
+  const freshData = await fetchPullRequests(organization, project, repository, days);
+  
+  // Cache the fresh data
+  await setCachedPRs(organization, project, repository, days, freshData);
+  
+  return freshData;
+}
+
 function PullRequestDetail({ pr, onMarkViewed }: { pr: PullRequest; onMarkViewed: () => void }) {
   const reviewersSection = pr.reviewers.length > 0 
     ? `\n## Reviewers\n${pr.reviewers.map(r => `${getVoteIcon(r.vote)} ${r.displayName}`).join('\n')}`
@@ -261,18 +372,37 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [viewedPRs, setViewedPRs] = useState<ViewedPRs>({});
+  const [lastRefresh, setLastRefresh] = useState<string>("");
 
-  const fetchData = async () => {
+  const fetchData = async (forceRefresh: boolean = false) => {
     try {
       setIsLoading(true);
       setError(null);
       const days = parseInt(selectedDayRange);
-      const data = await fetchPullRequests(preferences.organization, preferences.project, preferences.repository, days);
+      
+      let data: PullRequest[];
+      
+      if (forceRefresh) {
+        // Force refresh - clear cache and fetch fresh data
+        const cacheKey = getCacheKey(preferences.organization, preferences.project, preferences.repository, days);
+        await LocalStorage.removeItem(cacheKey);
+        console.log("Force refresh - cache cleared");
+        data = await fetchPullRequests(preferences.organization, preferences.project, preferences.repository, days);
+        await setCachedPRs(preferences.organization, preferences.project, preferences.repository, days, data);
+      } else {
+        // Use cached data if available
+        data = await fetchPullRequestsWithCache(preferences.organization, preferences.project, preferences.repository, days);
+      }
+      
       setPullRequests(data);
+      setLastRefresh(new Date().toLocaleTimeString());
       
       // Load viewed PRs
       const viewed = await getViewedPRs();
       setViewedPRs(viewed);
+      
+      // Clean up old caches
+      await clearOldCaches();
     } catch (err) {
       const error = err as Error;
       setError(error);
@@ -292,6 +422,15 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
 
   const revalidate = () => {
     fetchData();
+  };
+
+  const forceRefresh = () => {
+    showToast({
+      style: Toast.Style.Animated,
+      title: "Force refreshing...",
+      message: "Clearing cache and fetching fresh data",
+    });
+    fetchData(true);
   };
 
   const handleToggleViewed = async (pr: PullRequest) => {
@@ -338,7 +477,13 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
       }
       actions={
         <ActionPanel>
-          <Action title="Refresh" onAction={revalidate} shortcut={{ modifiers: ["cmd"], key: "r" }} />
+          <Action title="Refresh (Cache)" onAction={revalidate} shortcut={{ modifiers: ["cmd"], key: "r" }} />
+          <Action 
+            title="Force Refresh (Skip Cache)" 
+            onAction={forceRefresh} 
+            shortcut={{ modifiers: ["cmd", "shift"], key: "r" }}
+            icon={Icon.ArrowClockwise}
+          />
         </ActionPanel>
       }
     >
@@ -346,7 +491,7 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
         <List.EmptyView
           icon={Icon.CodeBlock}
           title="No pull requests found"
-          description={`No pull requests found in the last ${selectedDayRange} days`}
+          description={`No pull requests found in the last ${selectedDayRange} days${lastRefresh ? ` (Last refresh: ${lastRefresh})` : ""}`}
         />
       ) : (
         pullRequests?.map((pr) => {
@@ -360,7 +505,7 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
                 tintColor: isViewed ? "#28A745" : "#6C757D",
               }}
               title={`${getStatusEmoji(pr.status)} ${pr.title}`}
-              subtitle={`#${pr.pullRequestId}`}
+              subtitle={`#${pr.pullRequestId}${lastRefresh ? ` • ${lastRefresh}` : ""}`}
               accessories={[
                 { text: pr.createdBy.displayName },
                 { text: formatDate(pr.creationDate) },
@@ -384,7 +529,13 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
                     shortcut={{ modifiers: ["cmd"], key: "o" }}
                   />
                   <Action.CopyToClipboard title="Copy URL" content={pr.url || ""} />
-                  <Action title="Refresh" onAction={revalidate} shortcut={{ modifiers: ["cmd"], key: "r" }} />
+                  <Action title="Refresh (Cache)" onAction={revalidate} shortcut={{ modifiers: ["cmd"], key: "r" }} />
+                  <Action 
+                    title="Force Refresh (Skip Cache)" 
+                    onAction={forceRefresh} 
+                    shortcut={{ modifiers: ["cmd", "shift"], key: "r" }}
+                    icon={Icon.ArrowClockwise}
+                  />
                 </ActionPanel>
               }
             />
