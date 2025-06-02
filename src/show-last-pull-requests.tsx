@@ -8,6 +8,7 @@ import {
   Toast,
   getPreferenceValues,
   LaunchProps,
+  LocalStorage,
 } from "@raycast/api";
 import { useState, useEffect } from "react";
 import { execSync } from "child_process";
@@ -48,29 +49,87 @@ const DAY_RANGES = [
   { value: "31", label: "Last 31 days" },
 ];
 
-function getStatusIcon(status: string): Icon {
-  switch (status.toLowerCase()) {
-    case "active":
-      return Icon.Circle;
-    case "completed":
-      return Icon.CheckCircle;
-    case "abandoned":
-      return Icon.XMarkCircle;
-    default:
-      return Icon.Dot;
+interface ViewedPRs {
+  [prId: string]: {
+    viewedAt: string;
+    prTitle: string;
+  };
+}
+
+// Storage management
+const VIEWED_PRS_KEY = "viewedPullRequests";
+const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+
+async function getViewedPRs(): Promise<ViewedPRs> {
+  try {
+    const stored = await LocalStorage.getItem<string>(VIEWED_PRS_KEY);
+    if (!stored) return {};
+    
+    const viewedPRs = JSON.parse(stored) as ViewedPRs;
+    
+    // Clean up old entries (older than 1 month)
+    const now = Date.now();
+    const cleaned: ViewedPRs = {};
+    
+    Object.entries(viewedPRs).forEach(([prId, data]) => {
+      const viewedDate = new Date(data.viewedAt).getTime();
+      if (now - viewedDate < ONE_MONTH_MS) {
+        cleaned[prId] = data;
+      }
+    });
+    
+    // Save cleaned data back
+    await LocalStorage.setItem(VIEWED_PRS_KEY, JSON.stringify(cleaned));
+    return cleaned;
+  } catch {
+    return {};
   }
 }
 
-function getStatusColor(status: string): string {
+async function markPRAsViewed(prId: number, prTitle: string): Promise<void> {
+  try {
+    const viewedPRs = await getViewedPRs();
+    viewedPRs[prId.toString()] = {
+      viewedAt: new Date().toISOString(),
+      prTitle,
+    };
+    await LocalStorage.setItem(VIEWED_PRS_KEY, JSON.stringify(viewedPRs));
+  } catch (error) {
+    console.error("Error marking PR as viewed:", error);
+  }
+}
+
+async function togglePRViewed(prId: number, prTitle: string, isCurrentlyViewed: boolean): Promise<void> {
+  try {
+    const viewedPRs = await getViewedPRs();
+    
+    if (isCurrentlyViewed) {
+      // Remove from viewed
+      delete viewedPRs[prId.toString()];
+    } else {
+      // Mark as viewed
+      viewedPRs[prId.toString()] = {
+        viewedAt: new Date().toISOString(),
+        prTitle,
+      };
+    }
+    
+    await LocalStorage.setItem(VIEWED_PRS_KEY, JSON.stringify(viewedPRs));
+  } catch (error) {
+    console.error("Error toggling PR viewed status:", error);
+  }
+}
+
+function getStatusEmoji(status: string): string {
   switch (status.toLowerCase()) {
     case "active":
-      return "#007ACC";
+      return "🔄";
     case "completed":
-      return "#28A745";
+      return "✅";
     case "abandoned":
-      return "#DC3545";
+      return "❌";
     default:
-      return "#6C757D";
+      return "⚪";
   }
 }
 
@@ -151,13 +210,13 @@ async function fetchPullRequests(organization: string, project: string, reposito
   }
 }
 
-function PullRequestDetail({ pr }: { pr: PullRequest }) {
+function PullRequestDetail({ pr, onMarkViewed }: { pr: PullRequest; onMarkViewed: () => void }) {
   const reviewersSection = pr.reviewers.length > 0 
     ? `\n## Reviewers\n${pr.reviewers.map(r => `${getVoteIcon(r.vote)} ${r.displayName}`).join('\n')}`
     : '';
 
   const markdown = `
-# ${pr.title}
+# ${getStatusEmoji(pr.status)} ${pr.title}
 
 **Pull Request #${pr.pullRequestId}**
 
@@ -176,6 +235,12 @@ ${reviewersSection}
       markdown={markdown}
       actions={
         <ActionPanel>
+          <Action
+            title="Mark as Viewed"
+            icon={Icon.CheckCircle}
+            onAction={onMarkViewed}
+            shortcut={{ modifiers: ["cmd"], key: "m" }}
+          />
           <Action.OpenInBrowser
             title="Open in Browser"
             url={pr.url || ""}
@@ -195,6 +260,7 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
   const [pullRequests, setPullRequests] = useState<PullRequest[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [viewedPRs, setViewedPRs] = useState<ViewedPRs>({});
 
   const fetchData = async () => {
     try {
@@ -203,6 +269,10 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
       const days = parseInt(selectedDayRange);
       const data = await fetchPullRequests(preferences.organization, preferences.project, preferences.repository, days);
       setPullRequests(data);
+      
+      // Load viewed PRs
+      const viewed = await getViewedPRs();
+      setViewedPRs(viewed);
     } catch (err) {
       const error = err as Error;
       setError(error);
@@ -222,6 +292,34 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
 
   const revalidate = () => {
     fetchData();
+  };
+
+  const handleToggleViewed = async (pr: PullRequest) => {
+    const isViewed = viewedPRs[pr.pullRequestId.toString()] !== undefined;
+    
+    await togglePRViewed(pr.pullRequestId, pr.title, isViewed);
+    
+    // Update local state
+    const newViewedPRs = { ...viewedPRs };
+    if (isViewed) {
+      delete newViewedPRs[pr.pullRequestId.toString()];
+      showToast({
+        style: Toast.Style.Success,
+        title: "Marked as unread",
+        message: `PR #${pr.pullRequestId}`,
+      });
+    } else {
+      newViewedPRs[pr.pullRequestId.toString()] = {
+        viewedAt: new Date().toISOString(),
+        prTitle: pr.title,
+      };
+      showToast({
+        style: Toast.Style.Success,
+        title: "Marked as viewed",
+        message: `PR #${pr.pullRequestId}`,
+      });
+    }
+    setViewedPRs(newViewedPRs);
   };
 
   return (
@@ -251,37 +349,47 @@ export default function Command(props: LaunchProps<{ arguments: CommandArguments
           description={`No pull requests found in the last ${selectedDayRange} days`}
         />
       ) : (
-        pullRequests?.map((pr) => (
-          <List.Item
-            key={pr.pullRequestId}
-            icon={{
-              source: getStatusIcon(pr.status),
-              tintColor: getStatusColor(pr.status),
-            }}
-            title={pr.title}
-            subtitle={`#${pr.pullRequestId}`}
-            accessories={[
-              { text: pr.createdBy.displayName },
-              { text: formatDate(pr.creationDate) },
-            ]}
-            actions={
-              <ActionPanel>
-                <Action.Push
-                  title="Show Details"
-                  icon={Icon.Eye}
-                  target={<PullRequestDetail pr={pr} />}
-                />
-                <Action.OpenInBrowser
-                  title="Open in Browser"
-                  url={pr.url || ""}
-                  shortcut={{ modifiers: ["cmd"], key: "o" }}
-                />
-                <Action.CopyToClipboard title="Copy URL" content={pr.url || ""} />
-                <Action title="Refresh" onAction={revalidate} shortcut={{ modifiers: ["cmd"], key: "r" }} />
-              </ActionPanel>
-            }
-          />
-        ))
+        pullRequests?.map((pr) => {
+          const isViewed = viewedPRs[pr.pullRequestId.toString()] !== undefined;
+          
+          return (
+            <List.Item
+              key={pr.pullRequestId}
+              icon={{
+                source: isViewed ? Icon.CheckCircle : Icon.Circle,
+                tintColor: isViewed ? "#28A745" : "#6C757D",
+              }}
+              title={`${getStatusEmoji(pr.status)} ${pr.title}`}
+              subtitle={`#${pr.pullRequestId}`}
+              accessories={[
+                { text: pr.createdBy.displayName },
+                { text: formatDate(pr.creationDate) },
+              ]}
+              actions={
+                <ActionPanel>
+                  <Action.Push
+                    title="Show Details"
+                    icon={Icon.Eye}
+                    target={<PullRequestDetail pr={pr} onMarkViewed={() => handleToggleViewed(pr)} />}
+                  />
+                  <Action
+                    title={isViewed ? "Mark as Unread" : "Mark as Viewed"}
+                    icon={isViewed ? Icon.Circle : Icon.CheckCircle}
+                    onAction={() => handleToggleViewed(pr)}
+                    shortcut={{ modifiers: ["cmd"], key: "m" }}
+                  />
+                  <Action.OpenInBrowser
+                    title="Open in Browser"
+                    url={pr.url || ""}
+                    shortcut={{ modifiers: ["cmd"], key: "o" }}
+                  />
+                  <Action.CopyToClipboard title="Copy URL" content={pr.url || ""} />
+                  <Action title="Refresh" onAction={revalidate} shortcut={{ modifiers: ["cmd"], key: "r" }} />
+                </ActionPanel>
+              }
+            />
+          );
+        })
       )}
     </List>
   );
