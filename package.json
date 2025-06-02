@@ -1,0 +1,77 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "devops-tools",
+  "title": "DevOps Tools",
+  "description": "Azure DevOps tools for managing pull requests and more",
+  "icon": "icon.png",
+  "author": "milan_martiniak",
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "show-last-pull-requests",
+      "title": "Show Last Pull Requests",
+      "description": "Show Azure DevOps pull requests from the last 7, 14, 21, or 31 days",
+      "mode": "view",
+      "arguments": [
+        {
+          "name": "dayRange",
+          "placeholder": "Day range (7, 14, 21, 31)",
+          "type": "dropdown",
+          "data": [
+            { "title": "Last 7 days", "value": "7" },
+            { "title": "Last 14 days", "value": "14" },
+            { "title": "Last 21 days", "value": "21" },
+            { "title": "Last 31 days", "value": "31" }
+          ],
+          "required": false
+        }
+      ]
+    }
+  ],
+  "preferences": [
+    {
+      "name": "organization",
+      "title": "Azure DevOps Organization",
+      "description": "Your Azure DevOps organization name (e.g., 'krossk' from dev.azure.com/krossk)",
+      "type": "textfield",
+      "required": true,
+      "default": "krossk"
+    },
+    {
+      "name": "project",
+      "title": "Project Name", 
+      "description": "Your Azure DevOps project name (e.g., 'Esw')",
+      "type": "textfield",
+      "required": true,
+      "default": "Esw"
+    },
+    {
+      "name": "repository",
+      "title": "Repository Name",
+      "description": "Your repository name (e.g., 'Invoicing')",
+      "type": "textfield", 
+      "required": true,
+      "default": "Invoicing"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.99.3",
+    "@raycast/utils": "^1.17.0"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.0.4",
+    "@types/node": "22.13.10",
+    "@types/react": "19.0.10",
+    "eslint": "^9.22.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "prepublishOnly": "echo \"\\n\\nIt seems like you are trying to publish the Raycast extension to npm.\\n\\nIf you did intend to publish it to npm, remove the \\`prepublishOnly\\` script and rerun \\`npm publish\\` again.\\nIf you wanted to publish it to the Raycast Store instead, use \\`npm run publish\\` instead.\\n\\n\" && exit 1",
+    "publish": "npx @raycast/api@latest publish"
+  }
+}
